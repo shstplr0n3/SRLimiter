@@ -11,8 +11,8 @@ Smart rate limiter ```Go``` implementation.
 
 ## Description
 
+## [Usage](./examples/)
 
-
-## Usage
+Examples of using the package
 
 ## [TODO](./TODO.md)
