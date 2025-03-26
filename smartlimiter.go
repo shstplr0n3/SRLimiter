@@ -1,134 +1,59 @@
 package srlimiter
 
-import (
-	"context"
-	"errors"
-	"net/http"
-	"sync"
-	"sync/atomic"
-	"time"
-)
+import "sort"
 
-// Types of package
-type Rule func(*http.Request) bool
+type Load struct {
+	priorityWeight uint16
+	process        interface{}
+}
 
 type Collector struct {
-	rules []Rule
-	queue chan *http.Request
-	mu    sync.RWMutex
+	loads []*Load
 }
 
-type Distributor struct {
-	collector    *Collector
-	perSecond    int
-	perMinute    int
-	workerPool   chan struct{}
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	minuteTicker *time.Ticker
-	minuteCount  int
-	minuteMu     sync.Mutex
-	handler      http.Handler
-}
-
-type Middleware struct {
-	collector   *Collector
-	distributor *Distributor
-}
-
-// Enhanced constructor for Middleware
-func NewMiddleware(handler http.Handler, perSecond, perMinute int, rules ...Rule) (*Middleware, error) {
-	collector := NewCollector(rules...)
-	distributor, err := NewDistributor(collector, perSecond, perMinute)
-	if err != nil {
-		return nil, err
-	}
-	distributor.handler = handler
-
-	return &Middleware{
-		collector:   collector,
-		distributor: distributor,
-	}, nil
-}
-
-// ServeHTTP implementation for Middleware
-func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m.collector.AddRequest(r)
-}
-
-// Enhanced process method with actual request handling
-func (d *Distributor) process(req *http.Request) {
-	defer func() { <-d.workerPool }()
-
-	if d.handler != nil {
-		ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
-		defer cancel()
-
-		req = req.WithContext(ctx)
-		d.handler.ServeHTTP(nil, req)
+func NewLoad(process interface{}, priority uint16) *Load {
+	return &Load{
+		process:        process,
+		priorityWeight: priority,
 	}
 }
 
-// Enhanced Collector with request validation
-func (c *Collector) ValidateRequest(req *http.Request) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	for _, rule := range c.rules {
-		if !rule(req) {
-			return errors.New("request validation failed")
-		}
-	}
-	return nil
+func (l *Load) GetProcess() interface{} {
+	return l.process
 }
 
-// Helper function to create common rules
-func IPRateLimit(limit int) Rule {
-	visits := make(map[string]int)
-	var mu sync.Mutex
+func (l *Load) GetPriority() uint16 {
+	return l.priorityWeight
+}
 
-	return func(r *http.Request) bool {
-		ip := r.RemoteAddr
-		mu.Lock()
-		defer mu.Unlock()
-
-		if visits[ip] >= limit {
-			return false
-		}
-		visits[ip]++
-		return true
+func NewCollector() *Collector {
+	return &Collector{
+		loads: make([]*Load, 0),
 	}
 }
 
-// Metrics collection
-type Metrics struct {
-	TotalRequests     uint64
-	RejectedRequests  uint64
-	ProcessedRequests uint64
+func (c *Collector) AddLoad(load *Load) {
+	c.loads = append(c.loads, load)
+	c.sortByPriority()
 }
 
-func (d *Distributor) GetMetrics() *Metrics {
-	return &Metrics{
-		TotalRequests:     atomic.LoadUint64(&d.metrics.TotalRequests),
-		RejectedRequests:  atomic.LoadUint64(&d.metrics.RejectedRequests),
-		ProcessedRequests: atomic.LoadUint64(&d.metrics.ProcessedRequests),
-	}
-}
-
-func (d *Distributor) GracefulShutdown(timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		d.Stop()
-		close(done)
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
+func (c *Collector) GetNextLoad() *Load {
+	if len(c.loads) == 0 {
 		return nil
 	}
+	load := c.loads[0]
+	c.loads = c.loads[1:]
+	return load
 }
+
+func (c *Collector) sortByPriority() *Collector {
+	if len(c.loads) < 2 {
+		return c
+	}
+	sort.Slice(c.loads, func(i, j int) bool {
+		return c.loads[i].priorityWeight > c.loads[j].priorityWeight
+	})
+	return c
+}
+
+// func (c *Collector) Distribute
