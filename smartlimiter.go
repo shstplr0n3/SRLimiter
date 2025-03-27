@@ -1,6 +1,9 @@
 package srlimiter
 
-import "sort"
+import (
+	"sort"
+	"sync"
+)
 
 type Load struct {
 	priorityWeight uint16
@@ -8,6 +11,7 @@ type Load struct {
 }
 
 type Collector struct {
+	mutex sync.Mutex
 	loads []*Load
 }
 
@@ -16,25 +20,6 @@ func NewLoad(process interface{}, priority uint16) *Load {
 		process:        process,
 		priorityWeight: priority,
 	}
-}
-
-func (l *Load) GetProcess() interface{} {
-	return l.process
-}
-
-func (l *Load) GetPriority() uint16 {
-	return l.priorityWeight
-}
-
-func NewCollector() *Collector {
-	return &Collector{
-		loads: make([]*Load, 0),
-	}
-}
-
-func (c *Collector) AddLoad(load *Load) {
-	c.loads = append(c.loads, load)
-	c.sortByPriority()
 }
 
 func (c *Collector) GetNextLoad() *Load {
