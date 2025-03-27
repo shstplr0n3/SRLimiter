@@ -4,42 +4,40 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Types of package
-
-// functor for request validation
+// Rule defines validation logic for requests
 type Rule func(*http.Request) bool
 
-// Collector is a type for collecting requests in a queue with verification
+// Collector manages request collection and validation
 type Collector struct {
 	rules []Rule
 	queue chan *http.Request
 	mu    sync.RWMutex
 }
 
-// Distributor is a type for rate limiting and distributing incoming requests
+// Distributor handles rate limiting and request processing
 type Distributor struct {
-	collector    *Collector
-	perSecond    int
-	perMinute    int
-	workerPool   chan struct{}
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	minuteTicker *time.Ticker
-	minuteCount  int
-	minuteMu     sync.Mutex
+	collector      *Collector
+	perSecond      int
+	perMinute      int
+	workerPool     chan struct{}
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	minuteTicker   *time.Ticker
+	minuteCount    atomic.Int32
+	activeRequests atomic.Int32
 }
 
+// Middleware connects components for HTTP integration
 type Middleware struct {
 	collector   *Collector
 	distributor *Distributor
 }
 
-// Methods for Collector
-
-// Constructor of instances of type Collector
+// NewCollector creates a request collector
 func NewCollector(rules ...Rule) *Collector {
 	return &Collector{
 		rules: rules,
@@ -47,14 +45,14 @@ func NewCollector(rules ...Rule) *Collector {
 	}
 }
 
-// Method for addition of the new rule
+// AddRule adds new validation rule
 func (c *Collector) AddRule(r Rule) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rules = append(c.rules, r)
 }
 
-// Method for addition of the new request
+// AddRequest validates and queues the request
 func (c *Collector) AddRequest(req *http.Request) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -64,12 +62,15 @@ func (c *Collector) AddRequest(req *http.Request) {
 			return
 		}
 	}
-	c.queue <- req
+
+	select {
+	case c.queue <- req:
+	default:
+		// Handle queue overflow
+	}
 }
 
-// Methods for Distributor
-
-// Constuctor of instances of type Distributor
+// NewDistributor creates rate limiting processor
 func NewDistributor(c *Collector, perSec, perMin int) (*Distributor, error) {
 	if perSec < 1 {
 		return nil, errors.New("perSecond must be at least 1")
@@ -89,7 +90,32 @@ func NewDistributor(c *Collector, perSec, perMin int) (*Distributor, error) {
 	return d, nil
 }
 
-// Method for dispatching requests from queue to gorutines
+// Middleware initialization
+func NewMiddleware(rules []Rule, perSec, perMin int) *Middleware {
+	collector := NewCollector(rules...)
+	distributor, _ := NewDistributor(collector, perSec, perMin)
+	return &Middleware{
+		collector:   collector,
+		distributor: distributor,
+	}
+}
+
+// HTTP middleware handler
+func (m *Middleware) Handle(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.collector.AddRequest(r)
+
+		select {
+		case <-m.distributor.workerPool:
+			defer func() { m.distributor.workerPool <- struct{}{} }()
+			next.ServeHTTP(w, r)
+		default:
+			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+		}
+	})
+}
+
+// Distributor logic
 func (d *Distributor) dispatch() {
 	defer d.wg.Done()
 	defer d.minuteTicker.Stop()
@@ -102,7 +128,7 @@ func (d *Distributor) dispatch() {
 		case <-ticker.C:
 			d.tryProcessRequest()
 		case <-d.minuteTicker.C:
-			d.resetMinuteCounter()
+			d.minuteCount.Store(0)
 		case <-d.stopChan:
 			return
 		}
@@ -110,36 +136,22 @@ func (d *Distributor) dispatch() {
 }
 
 func (d *Distributor) tryProcessRequest() {
-	d.minuteMu.Lock()
-	defer d.minuteMu.Unlock()
-
-	if d.perMinute > 0 && d.minuteCount >= d.perMinute {
+	if d.perMinute > 0 && d.minuteCount.Load() >= int32(d.perMinute) {
 		return
 	}
 
 	select {
 	case req := <-d.collector.queue:
-		select {
-		case d.workerPool <- struct{}{}:
-			d.minuteCount++
-			go d.process(req)
-		default:
-			go func() { d.collector.queue <- req }()
-		}
+		d.minuteCount.Add(1)
+		d.activeRequests.Add(1)
+		go d.process(req)
 	default:
 	}
 }
 
-// Util funcs
-
-func (d *Distributor) process(*http.Request) {
-	return
-}
-
-func (d *Distributor) resetMinuteCounter() {
-	d.minuteMu.Lock()
-	defer d.minuteMu.Unlock()
-	d.minuteCount = 0
+func (d *Distributor) process(req *http.Request) {
+	defer d.activeRequests.Add(-1)
+	// Actual request processing logic
 }
 
 func (d *Distributor) Stop() {
