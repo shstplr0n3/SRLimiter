@@ -6,8 +6,8 @@ import (
 )
 
 type Load struct {
-	priorityWeight uint16
 	process        interface{}
+	priorityWeight uint16
 }
 
 // type Load constructor
@@ -22,9 +22,12 @@ func NewLoad(weight uint16, process interface{}) *Load {
 type Collector struct {
 	mutex  sync.RWMutex
 	loads  []*Load
-	length uint32
 	pool   sync.Pool
+
+	length uint32
 }
+
+var _ col = (*Collector)(nil)
 
 // type Collector constructor
 func NewCollector() *Collector {
