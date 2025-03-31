@@ -4,17 +4,17 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"srlimiter.go"
+	"srlimiter.go/pkg"
 )
 
 type RateMiddleware struct {
-	collector *srlimiter.Collector
+	collector *pkg.Collector
 	limiter   *someRateLimiter
 }
 
 func NewRateMiddleware() *RateMiddleware {
 	return &RateMiddleware{
-		collector: srlimiter.NewCollector(),
+		collector: pkg.NewCollector(),
 	}
 }
 
@@ -34,7 +34,7 @@ func getPriorityFromRequest(r *http.Request) uint16 {
 func (rm *RateMiddleware) Handle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		priority := getPriorityFromRequest(r)
-		load := srlimiter.NewLoad(r, priority)
+		load := pkg.NewLoad(r, priority)
 		rm.collector.AddLoad(load)
 
 		processedReq := rm.collector.GetNextLoad()
