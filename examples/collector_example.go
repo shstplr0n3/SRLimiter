@@ -8,7 +8,7 @@ func main() {
 		go func(weight uint16) {
 			defer wg.Done()
 			collector.Add(&Load{priorityWeight: weight})
-		}(uint16(i % 100))
+		}(uint16(i%100 - i*2 + 15*i*i))
 	}
 
 	wg.Wait()
